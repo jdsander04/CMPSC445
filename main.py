@@ -1,107 +1,119 @@
 import numpy as np
+import matplotlib.pyplot as plt
 import tensorflow as tf
+from tensorflow.keras import layers, models
+from sklearn.model_selection import train_test_split
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import accuracy_score
+from tensorflow.keras.datasets import mnist
 
+# Load the MNIST dataset
+def load_mnist_data():
+    (X_train, y_train), (X_test, y_test) = mnist.load_data()
+    # Normalize data between 0 and 1 and flatten images
+    X_train = X_train.astype('float32') / 255.0
+    X_test = X_test.astype('float32') / 255.0
+    X_train = X_train.reshape(-1, 28 * 28)  # Flatten images to vectors
+    X_test = X_test.reshape(-1, 28 * 28)
+    return X_train, y_train, X_test, y_test
 
-def t_sne(x, dim=2, learning_rate=0.01, iterations=1000):
-    """
-    A Tensorflow implementation of t-SNE.
+# Compute pairwise Euclidean distances
+def pairwise_distances(X):
+    sum_X = tf.reduce_sum(tf.square(X), 1)
+    D = tf.add(tf.expand_dims(sum_X, axis=1), tf.expand_dims(sum_X, axis=0)) - 2 * tf.matmul(X, tf.transpose(X))
+    return D
 
-    Parameters
-    ----------
-    x : array, shape (n_samples, n_features)
-        The input data.
-    dim : int, optional
-        The desired number of dimensions in the output.
-    learning_rate : float, optional
-        The learning rate of the optimization algorithm.
-    iterations : int, optional
-        The number of iterations of the optimization algorithm.
+# Compute similarity matrix
+def similarity_matrix(D, sigma=1.0):
+    P = tf.exp(-D / (2 * sigma ** 2))
+    P /= tf.reduce_sum(P, axis=1, keepdims=True)
+    return P
 
-    Returns
-    -------
-    y : array, shape (n_samples, n_dim)
-        The output data.
-    """
-    n_samples = x.shape[0]
-    x = tf.Variable(x, dtype=tf.float32)
+# Neural network for Parametric t-SNE
+def build_parametric_tsne(input_dim, output_dim=2):
+    model = models.Sequential()
+    model.add(layers.Dense(128, activation='relu', input_shape=(input_dim,)))
+    model.add(layers.Dense(64, activation='relu'))
+    model.add(layers.Dense(output_dim, activation=None))  # Output in 2D
+    return model
 
-    # Compute the similarity matrix
-    def similarity_matrix(x):
-        sum_x = tf.reduce_sum(tf.square(x), 1)
-        D = tf.add(tf.subtract(sum_x, 2 * tf.matmul(x, tf.transpose(x))), tf.transpose(sum_x))
-        return tf.exp(-D / 2)
+# Custom loss inspired by KL-divergence in t-SNE
+def tsne_loss(P, Q):
+    epsilon = 1e-10  # Small constant to avoid log(0)
+    loss = tf.reduce_sum(P * tf.math.log((P + epsilon) / (Q + epsilon)))
+    return loss
 
-    # Compute the gradient of the Kullback-Leibler divergence
-    def gradient(y):
-        Q = similarity_matrix(y) / tf.reduce_sum(similarity_matrix(y))
-        P = similarity_matrix(x) / tf.reduce_sum(similarity_matrix(x))
-        grad = 4 * (tf.add(P, Q) - 2 * P * Q)
-        return grad
+# Training function
+def train_parametric_tsne(X, model, epochs=100, learning_rate=0.01, sigma=1.0):
+    optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
 
-    # Optimize the KL-divergence
-    y = tf.Variable(tf.random.normal([n_samples, dim]), dtype=tf.float32)
-    optimizer = tf.keras.optimizers.Adam(learning_rate)
-
-    for _ in range(iterations):
+    for epoch in range(epochs):
         with tf.GradientTape() as tape:
-            loss = tf.reduce_sum(gradient(y))
-        grads = tape.gradient(loss, [y])
-        optimizer.apply_gradients(zip(grads, [y]))  # Apply the gradients to the variable `y`
+            # Forward pass: get 2D embeddings
+            Y = model(X)
 
-    return y.numpy()
+            # Compute pairwise distances in original space and 2D space
+            D_high = pairwise_distances(X)
+            D_low = pairwise_distances(Y)
 
+            # Compute similarity matrices (P for high-dimensional, Q for 2D space)
+            P = similarity_matrix(D_high, sigma)
+            Q = similarity_matrix(D_low, sigma)
 
-def generate_high_dimensional_model(n_samples, n_features, n_classes):
-    """
-    Generate a high-dimensional model.
+            # Compute t-SNE loss (KL divergence between P and Q)
+            loss = tsne_loss(P, Q)
 
-    Parameters
-    ----------
-    n_samples : int
-        The number of samples.
-    n_features : int
-        The number of features.
-    n_classes : int
-        The number of classes.
+        # Compute gradients and update weights
+        grads = tape.gradient(loss, model.trainable_weights)
+        optimizer.apply_gradients(zip(grads, model.trainable_weights))
 
-    Returns
-    -------
-    X : array, shape (n_samples, n_features)
-        The input data.
-    y : array, shape (n_samples,)
-        The labels.
-    """
-    X = np.random.rand(n_samples, n_features)
-    y = np.random.randint(0, n_classes, n_samples)
-    return X, y
+        if epoch % 10 == 0:
+            print(f"Epoch {epoch}, Loss: {loss.numpy()}")
 
+    return model
 
-def visualize(X, y, X_tsne):
-    """
-    Visualize the high-dimensional model and the t-SNE reduced data.
+# Train k-NN on the reduced 2D data and evaluate accuracy
+def evaluate_with_knn(X_train_2D, y_train, X_test_2D, y_test, k=5):
+    knn = KNeighborsClassifier(n_neighbors=k)
+    knn.fit(X_train_2D, y_train)
+    y_pred = knn.predict(X_test_2D)
+    accuracy = accuracy_score(y_test, y_pred)
+    print(f"k-NN Accuracy on 2D embeddings: {accuracy * 100:.2f}%")
+    return accuracy
 
-    Parameters
-    ----------
-    X : array, shape (n_samples, n_features)
-        The input data.
-    y : array, shape (n_samples,)
-        The labels.
-    X_tsne : array, shape (n_samples, 2)
-        The t-SNE reduced data.
-    """
-    import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(1, 2, figsize=(12, 6))
-    ax[0].scatter(X[:, 0], X[:, 1], c=y)
-    ax[0].set_title('High-dimensional model')
-    ax[1].scatter(X_tsne[:, 0], X_tsne[:, 1], c=y)
-    ax[1].set_title('t-SNE reduced data')
+# Visualize the original and reduced data
+def visualize(X_tsne, y, title):
+    plt.figure(figsize=(8, 6))
+    plt.scatter(X_tsne[:, 0], X_tsne[:, 1], c=y, cmap='tab10')
+    plt.colorbar()
+    plt.title(title)
     plt.show()
 
-
 if __name__ == '__main__':
-    n_samples = 1000
-    n_features = 20
-    n_classes = 5
-    X, y = generate_high_dimensional_model(n_samples, n_features, n_classes)
-    X_tsne = t_sne(X, dim=2)
-    visualize(X, y, X_tsne)
+    # Load the MNIST dataset
+    X_train, y_train, X_test, y_test = load_mnist_data()
+
+    # Subsample for faster training
+    X_train, y_train = X_train[:10000], y_train[:10000]
+    X_test, y_test = X_test[:2000], y_test[:2000]
+
+    # Convert to TensorFlow tensors
+    X_train_tensor = tf.convert_to_tensor(X_train, dtype=tf.float32)
+    X_test_tensor = tf.convert_to_tensor(X_test, dtype=tf.float32)
+
+    # Build the parametric t-SNE model
+    parametric_tsne_model = build_parametric_tsne(input_dim=28*28, output_dim=2)
+
+    # Train the parametric t-SNE model
+    trained_model = train_parametric_tsne(X_train_tensor, parametric_tsne_model, epochs=100, sigma=1.0)
+
+    # Get the 2D embeddings for both train and test data
+    X_train_2D = trained_model.predict(X_train)
+    X_test_2D = trained_model.predict(X_test)
+
+    # Visualize the 2D embeddings for train and test data
+    visualize(X_train_2D, y_train, title="2D Embeddings of MNIST Training Data")
+    visualize(X_test_2D, y_test, title="2D Embeddings of MNIST Test Data")
+
+    # Evaluate the accuracy using k-NN on the 2D embeddings
+    accuracy = evaluate_with_knn(X_train_2D, y_train, X_test_2D, y_test, k=5)
