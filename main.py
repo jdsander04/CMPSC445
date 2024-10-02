@@ -5,7 +5,10 @@ from tensorflow.keras import layers, models
 from sklearn.model_selection import train_test_split
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import accuracy_score
+from sklearn.manifold import TSNE
 from tensorflow.keras.datasets import mnist
+
+TF_ENABLE_ONEDNN_OPTS=0
 
 # Load the MNIST dataset
 def load_mnist_data():
@@ -32,7 +35,8 @@ def similarity_matrix(D, sigma=1.0):
 # Neural network for Parametric t-SNE
 def build_parametric_tsne(input_dim, output_dim=2):
     model = models.Sequential()
-    model.add(layers.Dense(128, activation='relu', input_shape=(input_dim,)))
+    model.add(layers.Dense(256, activation='relu', input_shape=(input_dim,)))
+    model.add(layers.Dense(128, activation='relu'))
     model.add(layers.Dense(64, activation='relu'))
     model.add(layers.Dense(output_dim, activation=None))  # Output in 2D
     return model
@@ -45,7 +49,10 @@ def tsne_loss(P, Q):
 
 # Training function
 def train_parametric_tsne(X, model, epochs=100, learning_rate=0.01, sigma=1.0):
-    optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+    lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
+        initial_learning_rate=0.01, decay_steps=10000, decay_rate=0.9
+    )
+    optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
 
     for epoch in range(epochs):
         with tf.GradientTape() as tape:
@@ -72,14 +79,11 @@ def train_parametric_tsne(X, model, epochs=100, learning_rate=0.01, sigma=1.0):
 
     return model
 
-# Train k-NN on the reduced 2D data and evaluate accuracy
-def evaluate_with_knn(X_train_2D, y_train, X_test_2D, y_test, k=5):
-    knn = KNeighborsClassifier(n_neighbors=k)
-    knn.fit(X_train_2D, y_train)
-    y_pred = knn.predict(X_test_2D)
-    accuracy = accuracy_score(y_test, y_pred)
-    print(f"k-NN Accuracy on 2D embeddings: {accuracy * 100:.2f}%")
-    return accuracy
+# Compute t-SNE embeddings using Scikit-Learn
+def compute_tsne(X, y, perplexity=30, learning_rate=200, n_iter=1000):
+    tsne = TSNE(n_components=2, perplexity=perplexity, learning_rate=learning_rate, n_iter=n_iter)
+    X_tsne = tsne.fit_transform(X)
+    return X_tsne
 
 # Visualize the original and reduced data
 def visualize(X_tsne, y, title):
@@ -111,9 +115,13 @@ if __name__ == '__main__':
     X_train_2D = trained_model.predict(X_train)
     X_test_2D = trained_model.predict(X_test)
 
-    # Visualize the 2D embeddings for train and test data
-    visualize(X_train_2D, y_train, title="2D Embeddings of MNIST Training Data")
-    visualize(X_test_2D, y_test, title="2D Embeddings of MNIST Test Data")
+    # Visualize the 2D embeddings using Scikit-Learn
+    X_train_tsne = compute_tsne(X_train, y_train, perplexity=30, learning_rate=200, n_iter=1000)
+    X_test_tsne = compute_tsne(X_test, y_test, perplexity=30, learning_rate=200, n_iter=1000)
 
-    # Evaluate the accuracy using k-NN on the 2D embeddings
-    accuracy = evaluate_with_knn(X_train_2D, y_train, X_test_2D, y_test, k=5)
+    # Visualize the improvements between epochs against actual t-SNE of the MNIST data
+    visualize(X_train_tsne, y_train, title="2D Embeddings of MNIST Training Data using t-SNE")
+    visualize(X_test_tsne, y_test, title="2D Embeddings of MNIST Test Data using t-SNE")
+    visualize(X_train_2D, y_train, title="2D Embeddings of MNIST Training Data using Parametric t-SNE")
+    visualize(X_test_2D, y_test, title="2D Embeddings of MNIST Test Data using Parametric t-SNE")
+
